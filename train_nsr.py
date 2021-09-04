@@ -53,10 +53,6 @@ def main(delta):
     if not os.path.exists(image_dir):
         os.mkdir(image_dir)
     # load training data
-    # ppgdataset = PPGDataloader('F:/UCLA_PPG_40hz/', category='NSR', cases=10000, good_quality=False)
-    # trainloader = torch.utils.data.DataLoader(dataset=ppgdataset,
-    #                                                 batch_size=batch_size,
-    #                                                 shuffle=False)
 
     trainset = Dataset()
 
