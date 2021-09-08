@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 # from models import Discriminator, Generator, weights_init
 from models_1200 import Discriminator,Generator,weights_init
 from PPGDataset_40hz import PPGDataloader
-from scipy.signal import butter, lfilter
+from scipy.signal import butter, lfilter,welch
 import torch
 from torch.autograd.variable import Variable
 import os
@@ -28,17 +28,17 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
     y = lfilter(b, a, data)
     return y
 
-lr = 1e-4
-weight_decay = 1e-5
+lr = 5e-4
+weight_decay = 0
 beta1 = 0.5
-epoch_num = 100
+epoch_num = 200
 batch_size = 1000
 nz = 1200  # length of noise
 ngpu = 0
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 adversarial_loss = nn.BCELoss()
-PSDloss = PSDShift(device=device)
+PSDloss = PSDShift(device=device)#window_length=1200,noverlap=0,
 MsEloss = nn.MSELoss()
 lag_sec = 1.5
 fs = 40
@@ -46,8 +46,8 @@ ACLoss = AutoCorrelationLoss(int(lag_sec*fs),device=device)
 
 def main(delta):
 
-    model_dir = './model_dir_nsr/'
-    image_dir = './image_dir_nsr/'
+    model_dir = './model_dir_nsr_test_plot/'
+    image_dir = './image_dir_nsr_test_plot/'
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
     if not os.path.exists(image_dir):
@@ -130,77 +130,51 @@ def main(delta):
 
         print('[%d/%d]\tCE_Loss: %.4f\tPSD_Loss: %.4f\t'%(epoch,epoch_num,BCE_loss/len(trainloader),PSD_loss/len(trainloader)))
 
-        # save training process
-        with torch.no_grad():
-            fake = netG(fixed_noise).detach().cpu()
-            f, a = plt.subplots(4, 6, figsize=(80, 15))
-            for i in range(2):
-                for j_fake in range(2):
-                    generated_signal = fake[i * 4 + j_fake].view(-1)
-                    a[i][j_fake].plot(generated_signal)
-                    # a[i][j_fake].plot(fake[i * 4 + j_fake].view(-1))
-                    a[i][j_fake].title.set_text('generated signal')
-                    a[i][j_fake].set_xticks(())
-                    a[i][j_fake].set_yticks(())
-                for j_sample in range(2, 4):
-                    generated_signal = fake[i * 4 + j_sample-2].view(-1)
-                    # generated_signal = torch.from_numpy(generated_signal)
-                    generated_signal = generated_signal.view(1,1200)
-                    signal_welch = _torch_welch(generated_signal, fs=40, nperseg=400)
-                    signal_welch = 10*torch.log(signal_welch[0])
-                    a[i][j_sample].plot(signal_welch)
-                    # a[i][j_sample].plot(_torch_welch(sample_data[i * 4 + j_sample].view(-1),fs=40,nperseg=300))
-                    a[i][j_sample].title.set_text('Welched generated signal')
-                    # a[i][j_sample].set_xticks(())
-                    # a[i][j_sample].set_yticks(())
-                for j_sample in range(4, 6):
-                    generated_signal = fake[i * 4 + j_sample-4].view(-1)
-                    # generated_signal = torch.from_numpy(generated_signal)
-                    generated_signal = generated_signal.view(1200,)
-                    signal_ac = autocorrelation_function(generated_signal,200)
-                    a[i][j_sample].plot(signal_ac)
-                    # a[i][j_sample].plot(_torch_welch(sample_data[i * 4 + j_sample].view(-1),fs=40,nperseg=300))
-                    a[i][j_sample].title.set_text('AC - generated signal')
-                    # a[i][j_sample].set_xticks(())
-                    # a[i][j_sample].set_yticks(())
+        perm = torch.randperm(data.size(0))
+        idx = perm[:4]
+        real_data = data[idx].detach().cpu()
 
-            for i in range(2,4):
-                for j_fake in range(2):
-                    generated_signal = sample_data[i * 4 + j_fake].view(-1)
-                    a[i][j_fake].plot(generated_signal)
-                    # a[i][j_fake].plot(fake[i * 4 + j_fake].view(-1))
-                    a[i][j_fake].title.set_text('Real signal')
-                    a[i][j_fake].set_xticks(())
-                    a[i][j_fake].set_yticks(())
-                for j_sample in range(2, 4):
-                    generated_signal = sample_data[i * 4 + j_sample-2].view(-1)
-                    # generated_signal = torch.from_numpy(generated_signal)
-                    generated_signal = generated_signal.view(1,1200)
-                    signal_welch = _torch_welch(generated_signal, fs=40, nperseg=400)
-                    signal_welch = 10*torch.log(signal_welch[0])
-                    a[i][j_sample].plot(signal_welch)
-                    # a[i][j_sample].plot(_torch_welch(sample_data[i * 4 + j_sample].view(-1),fs=40,nperseg=300))
-                    a[i][j_sample].title.set_text('Welched real signal')
-                    # a[i][j_sample].set_xticks(())
-                    # a[i][j_sample].set_yticks(())
-
-                for j_sample in range(4, 6):
-                    generated_signal = sample_data[i * 4 + j_sample-4].view(-1)
-                    # generated_signal = torch.from_numpy(generated_signal)
-                    generated_signal = generated_signal.view(1200, )
-                    signal_ac = autocorrelation_function(generated_signal, 200)
-                    a[i][j_sample].plot(signal_ac)
-                    # a[i][j_sample].plot(_torch_welch(sample_data[i * 4 + j_sample].view(-1),fs=40,nperseg=300))
-                    a[i][j_sample].title.set_text('AC - real signal')
-                    # a[i][j_sample].set_xticks(())
-                    # a[i][j_sample].set_yticks(())
-
-            plt.savefig(image_dir+'/nsr_epoch_%d.png' % epoch)
-            plt.close()
-
+        fake_data = fake[idx].detach().cpu()
+        plot_figure(real_data,fake_data,save_dir= image_dir + '/nsr_epoch_%d.png' % epoch)
         # save models
         torch.save(netG, model_dir+'/netG_nsr_%d.pkl' % epoch)
         torch.save(netD, model_dir+'/netD_nsr_%d.pkl' % epoch)
+
+
+def plot_figure(real,fake,save_dir):
+    # save training process
+        f, a = plt.subplots(4, 6, figsize=(80, 15))
+        a[0][0].plot(fake[0].view(1200,))
+        a[0][1].plot(fake[1].view(1200,))
+        a[0][2].plot(10*torch.log(_torch_welch(fake[0].view(1,1200),fs=40,nperseg=400)[0]))
+        a[0][3].plot(10*torch.log(_torch_welch(fake[1].view(1,1200),fs=40,nperseg=400)[0]))
+        a[0][4].plot(autocorrelation_function(fake[0].view(1200,),200))
+        a[0][5].plot(autocorrelation_function(fake[1].view(1200,),200))
+
+
+        a[1][0].plot(fake[2].view(1200,))
+        a[1][1].plot(fake[3].view(1200,))
+        a[1][2].plot(10 * torch.log(_torch_welch(fake[2].view(1,1200), fs=40, nperseg=400)[0]))
+        a[1][3].plot(10 * torch.log(_torch_welch(fake[3].view(1,1200), fs=40, nperseg=400)[0]))
+        a[1][4].plot(autocorrelation_function(fake[2].view(1200,), 200))
+        a[1][5].plot(autocorrelation_function(fake[3].view(1200,), 200))
+
+
+        a[2][0].plot(real[0].view(1200,))
+        a[2][1].plot(real[1].view(1200,))
+        a[2][2].plot(10 * torch.log(_torch_welch(real[0].view(1,1200), fs=40, nperseg=400)[0]))
+        a[2][3].plot(10 * torch.log(_torch_welch(real[1].view(1,1200), fs=40, nperseg=400)[0]))
+        a[2][4].plot(autocorrelation_function(real[0].view(1200,), 200))
+        a[2][5].plot(autocorrelation_function(real[1].view(1200,), 200))
+
+        a[3][0].plot(real[2].view(1200,))
+        a[3][1].plot(real[3].view(1200,))
+        a[3][2].plot(10 * torch.log(_torch_welch(real[2].view(1,1200), fs=40, nperseg=400)[0]))
+        a[3][3].plot(10 * torch.log(_torch_welch(real[3].view(1,1200), fs=40, nperseg=400)[0]))
+        a[3][4].plot(autocorrelation_function(real[2].view(1200,), 200))
+        a[3][5].plot(autocorrelation_function(real[3].view(1200,), 200))
+        plt.savefig(save_dir)
+        plt.close()
 
 if __name__ == '__main__':
     main(1)

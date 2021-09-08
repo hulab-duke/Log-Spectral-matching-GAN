@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def _torch_welch(data, fs=40.0, nperseg=400, noverlap=None, average='mean',
-                 device='cpu'):
+                 device='cpu',return_list = False):
     """ Compute PSD using Welch's method.
     """
     if len(data.shape) > 2:
@@ -31,17 +31,22 @@ def _torch_welch(data, fs=40.0, nperseg=400, noverlap=None, average='mean',
         seg_fd_abs = (seg_fd[:, :, 0] ** 2 + seg_fd[:, :, 1] ** 2)
         psd[i] = seg_fd_abs
 
-    # taking the average
-    if average == 'mean':
-        psd = torch.sum(psd, 0)
-    elif average == 'median':
-        psd = torch.median(psd, 0)[0] * nseg
+    if return_list:
+        for i in range(nseg):
+            psd[i]/=T
+        return psd
     else:
-        raise ValueError(f'average must be "mean" or "median", got {average} instead')
+        # taking the average
+        if average == 'mean':
+            psd = torch.sum(psd, 0)
+        elif average == 'median':
+            psd = torch.median(psd, 0)[0] * nseg
+        else:
+            raise ValueError(f'average must be "mean" or "median", got {average} instead')
 
-    # Normalize
-    psd /= T
-    return psd
+        # Normalize
+        psd /= T
+        return psd
 
 def js_div(p_logits, q_logits, get_softmax=True):
     """
@@ -57,9 +62,12 @@ def js_div(p_logits, q_logits, get_softmax=True):
 class PSDShift(nn.Module):
     def __init__(self,fs=40,window_length = 400,noverlap = None,device = 'cpu'):
         super().__init__()
+        self.device = device
         self.fs = fs
         self.welch = lambda x: _torch_welch(
-            x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device)
+            x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device,return_list=False)
+        self.psd_list = lambda x: _torch_welch(
+            x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device, return_list=True)
         Tensor = torch.FloatTensor if device=='cpu' else torch.cuda.FloatTensor
         self.kernel = Variable(Tensor(torch.rand(1, 1, 3,device = device)), requires_grad=True)
 
@@ -68,15 +76,34 @@ class PSDShift(nn.Module):
         b_size = fake.shape[0]
         fake = fake.view(b_size,-1)
         real = real.view(b_size,-1)
-        fake_freq = self.welch(fake)
-        real_freq = self.welch(real)
-        fake_freq = torch.log(self.welch(fake))
-        real_freq = torch.log(self.welch(real))
+        fake_psd_list = self.psd_list(fake)
+        real_psd_list = self.psd_list(real)
 
-        min_real = torch.min(real_freq, dim=1)[0].view(b_size, 1)
-        range_real = torch.max(real_freq, dim=1)[0].view(b_size, 1) - min_real
-        normalised_real = (real_freq - min_real) / range_real
-        real_freq = normalised_real.view(b_size, -1)
+        l2_loss = nn.MSELoss()
+        psd_loss = torch.zeros((len(fake_psd_list)**2, 1)).to(self.device)
+        count = 0
+        for index_fake in range(1,len(fake_psd_list)+1):
+            for index_real in range(1,len(real_psd_list)+1):
+
+                fake_seg = (fake_psd_list[index_fake - 1] - torch.min(fake_psd_list[index_fake - 1])) / (
+                            torch.max(fake_psd_list[index_fake - 1]) - torch.min(fake_psd_list[index_fake - 1]))
+                real_seg = (real_psd_list[index_real - 1] - torch.min(real_psd_list[index_real - 1])) / (
+                            torch.max(real_psd_list[index_real - 1]) - torch.min(real_psd_list[index_real - 1]))
+                fake_seg = torch.clamp(fake_seg, min=1e-8)
+                real_seg = torch.clamp(real_seg, min=1e-8)# to avoid getting inf loss
+                psd_loss[count] = l2_loss(torch.log(fake_seg),torch.log(real_seg))
+                if torch.isinf(psd_loss[count]):
+                    print('hello')
+                count+=1
+        psd_loss = torch.max(psd_loss)
+        # fake_freq = torch.log(self.welch(fake))
+        # real_freq = torch.log(self.welch(real))
+
+
+        # min_real = torch.min(real_freq, dim=1)[0].view(b_size, 1)
+        # range_real = torch.max(real_freq, dim=1)[0].view(b_size, 1) - min_real
+        # normalised_real = (real_freq - min_real) / range_real
+        # real_freq = normalised_real.view(b_size, -1)
 
         # fake_freq = fake_freq.view(b_size,1,-1)
 
@@ -84,16 +111,16 @@ class PSDShift(nn.Module):
         # real_pool = F.max_pool1d(F.conv1d(real_freq,self.kernel),2)
         # fake_freq= F.upsample(fake_pool,size=real_freq.shape[1])
 
-        fake_freq = fake_freq.view(b_size, -1)
-        min_fake = torch.min(fake_freq, dim=1)[0].view(b_size, 1)
-        range_fake = torch.max(fake_freq, dim=1)[0].view(b_size, 1) - min_fake
-        normalised_fake = (fake_freq - min_fake) / range_fake
-        fake_freq = normalised_fake.view(b_size, -1)
+        # fake_freq = fake_freq.view(b_size, -1)
+        # min_fake = torch.min(fake_freq, dim=1)[0].view(b_size, 1)
+        # range_fake = torch.max(fake_freq, dim=1)[0].view(b_size, 1) - min_fake
+        # normalised_fake = (fake_freq - min_fake) / range_fake
+        # fake_freq = normalised_fake.view(b_size, -1)
 
-        l2_loss = nn.MSELoss()
-        psd_loss = l2_loss(fake_freq,real_freq)
+        # l2_loss = nn.MSELoss()
+        # # KLDivLoss = nn.KLDivLoss(reduction='batchmean')
+        # psd_loss = l2_loss(fake_freq[:,100:],real_freq[:,100:])
         return psd_loss
-
 
 # Compute covariance for a  lag
 def cov(x, y):

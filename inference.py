@@ -34,7 +34,7 @@ for tms in tqdm(range(400)):
     for sig in fake:
         # new_sig = butter_bandpass_filter(sig,lowcut=0.9,highcut=5,fs=40,order=2)
         new_sig = sig
-        new_sig = new_sig - min(new_sig)/(max(new_sig) - min(new_sig))
+        new_sig = (new_sig - min(new_sig))/(max(new_sig) - min(new_sig))
         new_fake.append(new_sig)
     new_fake = np.array(new_fake)
     final.append(new_fake)
