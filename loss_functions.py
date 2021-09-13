@@ -3,7 +3,7 @@ from torch.autograd.variable import Variable
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import math
 def _torch_welch(data, fs=40.0, nperseg=400, noverlap=None, average='mean',
                  device='cpu',return_list = False):
     """ Compute PSD using Welch's method.
@@ -60,7 +60,7 @@ def js_div(p_logits, q_logits, get_softmax=True):
     return (KLDivLoss(log_mean_output, p_logits) + KLDivLoss(log_mean_output, q_logits))/2
 
 class PSDShift(nn.Module):
-    def __init__(self,fs=40,window_length = 400,noverlap = None,device = 'cpu'):
+    def __init__(self,fs=40,window_length = 100,noverlap = 0,device = 'cpu'):
         super().__init__()
         self.device = device
         self.fs = fs
@@ -68,8 +68,8 @@ class PSDShift(nn.Module):
             x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device,return_list=False)
         self.psd_list = lambda x: _torch_welch(
             x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device, return_list=True)
-        Tensor = torch.FloatTensor if device=='cpu' else torch.cuda.FloatTensor
-        self.kernel = Variable(Tensor(torch.rand(1, 1, 3,device = device)), requires_grad=True)
+        self.Tensor = torch.FloatTensor if device=='cpu' else torch.cuda.FloatTensor
+        # self.kernel = Variable(Tensor(torch.rand(1, 1, 3,device = device)), requires_grad=True)
 
     def forward(self,fake,real):
 
@@ -82,6 +82,10 @@ class PSDShift(nn.Module):
         l2_loss = nn.MSELoss()
         psd_loss = torch.zeros((len(fake_psd_list)**2, 1)).to(self.device)
         count = 0
+        count_self = 0
+        m = len(fake_psd_list)
+        m = int(m*(m-1)/2)
+        psd_loss_fake = torch.zeros(m, 1).to(self.device)
         for index_fake in range(1,len(fake_psd_list)+1):
             for index_real in range(1,len(real_psd_list)+1):
 
@@ -91,11 +95,17 @@ class PSDShift(nn.Module):
                             torch.max(real_psd_list[index_real - 1]) - torch.min(real_psd_list[index_real - 1]))
                 fake_seg = torch.clamp(fake_seg, min=1e-8)
                 real_seg = torch.clamp(real_seg, min=1e-8)# to avoid getting inf loss
-                psd_loss[count] = l2_loss(torch.log(fake_seg),torch.log(real_seg))
-                if torch.isinf(psd_loss[count]):
-                    print('hello')
-                count+=1
+                psd_loss[count] = l2_loss(fake_seg[:,:80],real_seg[:,:80])
+
+            for index_fake_self in range(1,len(fake_psd_list)+1):
+                if index_fake < index_fake_self:
+                    fake_seg_self = (fake_psd_list[index_fake_self - 1] - torch.min(fake_psd_list[index_fake_self - 1])) / (
+                            torch.max(fake_psd_list[index_fake_self - 1]) - torch.min(fake_psd_list[index_fake_self - 1]))
+                    fake_seg_self = torch.clamp(fake_seg_self, min=1e-8)
+                    psd_loss_fake[count_self] = l2_loss(fake_seg[:,:80],fake_seg_self[:,:80])
+                    count_self+=1
         psd_loss = torch.max(psd_loss)
+        psd_loss_fake_self = torch.max(psd_loss_fake)
         # fake_freq = torch.log(self.welch(fake))
         # real_freq = torch.log(self.welch(real))
 
@@ -120,7 +130,7 @@ class PSDShift(nn.Module):
         # l2_loss = nn.MSELoss()
         # # KLDivLoss = nn.KLDivLoss(reduction='batchmean')
         # psd_loss = l2_loss(fake_freq[:,100:],real_freq[:,100:])
-        return psd_loss
+        return psd_loss + psd_loss_fake_self
 
 # Compute covariance for a  lag
 def cov(x, y):
