@@ -32,8 +32,8 @@ def _torch_welch(data, fs=40.0, nperseg=400, noverlap=None, average='mean',
         psd[i] = seg_fd_abs
 
     if return_list:
-        for i in range(nseg):
-            psd[i]/=T
+        # for i in range(nseg):
+        #     psd[i]/=T
         return psd
     else:
         # taking the average
@@ -60,7 +60,7 @@ def js_div(p_logits, q_logits, get_softmax=True):
     return (KLDivLoss(log_mean_output, p_logits) + KLDivLoss(log_mean_output, q_logits))/2
 
 class PSDShift(nn.Module):
-    def __init__(self,fs=40,window_length = 100,noverlap = 0,device = 'cpu'):
+    def __init__(self,fs=40,window_length = 100,noverlap = 0,device = 'cpu',intergration='mean'):
         super().__init__()
         self.device = device
         self.fs = fs
@@ -69,6 +69,9 @@ class PSDShift(nn.Module):
         self.psd_list = lambda x: _torch_welch(
             x, fs=fs, nperseg=window_length, noverlap=noverlap, device=device, return_list=True)
         self.Tensor = torch.FloatTensor if device=='cpu' else torch.cuda.FloatTensor
+        self.intergration = intergration
+        if self.intergration not in ['mean','max']:
+            raise ValueError(f'average must be "mean" or "max", got {self.intergration} instead')
         # self.kernel = Variable(Tensor(torch.rand(1, 1, 3,device = device)), requires_grad=True)
 
     def forward(self,fake,real):
@@ -76,8 +79,22 @@ class PSDShift(nn.Module):
         b_size = fake.shape[0]
         fake = fake.view(b_size,-1)
         real = real.view(b_size,-1)
-        fake_psd_list = self.psd_list(fake)
-        real_psd_list = self.psd_list(real)
+
+        fake_psd_list = torch.clamp(self.psd_list(fake), min=1e-6)
+        real_psd_list = torch.clamp(self.psd_list(real), min=1e-6)
+
+        for index,sig in enumerate(fake_psd_list):
+            sig = sig.view(-1,b_size)
+            tmp = (sig - torch.min(sig,dim=0)[0])/(torch.max(sig,dim=0)[0] - torch.min(sig,dim=0)[0])
+            tmp = torch.clamp(tmp, min=1e-6)
+            fake_psd_list[index] = tmp.view(b_size,-1)
+
+        for index,sig in enumerate(real_psd_list):
+            sig = sig.view(-1, b_size)
+            tmp = (sig - torch.min(sig, dim=0)[0]) / (torch.max(sig, dim=0)[0] - torch.min(sig, dim=0)[0])
+            tmp = torch.clamp(tmp, min=1e-6)
+            real_psd_list[index] = tmp.view(b_size, -1)
+
 
         l2_loss = nn.MSELoss()
         psd_loss = torch.zeros((len(fake_psd_list)**2, 1)).to(self.device)
@@ -88,49 +105,26 @@ class PSDShift(nn.Module):
         psd_loss_fake = torch.zeros(m, 1).to(self.device)
         for index_fake in range(1,len(fake_psd_list)+1):
             for index_real in range(1,len(real_psd_list)+1):
-
-                fake_seg = (fake_psd_list[index_fake - 1] - torch.min(fake_psd_list[index_fake - 1])) / (
-                            torch.max(fake_psd_list[index_fake - 1]) - torch.min(fake_psd_list[index_fake - 1]))
-                real_seg = (real_psd_list[index_real - 1] - torch.min(real_psd_list[index_real - 1])) / (
-                            torch.max(real_psd_list[index_real - 1]) - torch.min(real_psd_list[index_real - 1]))
-                fake_seg = torch.clamp(fake_seg, min=1e-8)
-                real_seg = torch.clamp(real_seg, min=1e-8)# to avoid getting inf loss
-                psd_loss[count] = l2_loss(fake_seg[:,:80],real_seg[:,:80])
+                fake_seg = fake_psd_list[index_fake - 1]
+                real_seg = real_psd_list[index_real - 1]
+                fake_seg = torch.clamp(fake_seg, min=1e-6)
+                real_seg = torch.clamp(real_seg, min=1e-6)# to avoid getting inf loss
+                psd_loss[count] = l2_loss(fake_seg,real_seg)
+                count+=1
 
             for index_fake_self in range(1,len(fake_psd_list)+1):
                 if index_fake < index_fake_self:
-                    fake_seg_self = (fake_psd_list[index_fake_self - 1] - torch.min(fake_psd_list[index_fake_self - 1])) / (
-                            torch.max(fake_psd_list[index_fake_self - 1]) - torch.min(fake_psd_list[index_fake_self - 1]))
-                    fake_seg_self = torch.clamp(fake_seg_self, min=1e-8)
-                    psd_loss_fake[count_self] = l2_loss(fake_seg[:,:80],fake_seg_self[:,:80])
+                    fake_seg_self = fake_psd_list[index_fake_self-1]
+                    fake_seg_self = torch.clamp(fake_seg_self, min=1e-6)
+                    psd_loss_fake[count_self] = l2_loss(fake_seg,fake_seg_self)
                     count_self+=1
-        psd_loss = torch.max(psd_loss)
-        psd_loss_fake_self = torch.max(psd_loss_fake)
-        # fake_freq = torch.log(self.welch(fake))
-        # real_freq = torch.log(self.welch(real))
-
-
-        # min_real = torch.min(real_freq, dim=1)[0].view(b_size, 1)
-        # range_real = torch.max(real_freq, dim=1)[0].view(b_size, 1) - min_real
-        # normalised_real = (real_freq - min_real) / range_real
-        # real_freq = normalised_real.view(b_size, -1)
-
-        # fake_freq = fake_freq.view(b_size,1,-1)
-
-        # fake_pool = F.max_pool1d(F.conv1d(fake_freq,self.kernel),2)
-        # real_pool = F.max_pool1d(F.conv1d(real_freq,self.kernel),2)
-        # fake_freq= F.upsample(fake_pool,size=real_freq.shape[1])
-
-        # fake_freq = fake_freq.view(b_size, -1)
-        # min_fake = torch.min(fake_freq, dim=1)[0].view(b_size, 1)
-        # range_fake = torch.max(fake_freq, dim=1)[0].view(b_size, 1) - min_fake
-        # normalised_fake = (fake_freq - min_fake) / range_fake
-        # fake_freq = normalised_fake.view(b_size, -1)
-
-        # l2_loss = nn.MSELoss()
-        # # KLDivLoss = nn.KLDivLoss(reduction='batchmean')
-        # psd_loss = l2_loss(fake_freq[:,100:],real_freq[:,100:])
-        return psd_loss + psd_loss_fake_self
+        if self.intergration == 'max':
+            psd_loss = torch.max(psd_loss)
+            psd_loss_fake_self = torch.max(psd_loss_fake)
+        else:
+            psd_loss = torch.mean(psd_loss,0)
+            psd_loss_fake_self = torch.mean(psd_loss_fake,0)
+        return psd_loss,psd_loss_fake_self
 
 # Compute covariance for a  lag
 def cov(x, y):

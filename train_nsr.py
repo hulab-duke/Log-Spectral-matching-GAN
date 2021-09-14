@@ -31,23 +31,23 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=5):
 lr = 5e-4
 weight_decay = 0
 beta1 = 0.5
-epoch_num = 200
+epoch_num = 100
 batch_size = 1000
 nz = 1200  # length of noise
 ngpu = 0
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 warnings.filterwarnings("ignore")
 adversarial_loss = nn.BCELoss()
-PSDloss = PSDShift(device=device)#window_length=1200,noverlap=0,
+
 MsEloss = nn.MSELoss()
 lag_sec = 1.5
 fs = 40
 ACLoss = AutoCorrelationLoss(int(lag_sec*fs),device=device)
 
-def main(delta):
+def main(delta1,delta2,window_length,overlap,intergration = 'mean'):
 
-    model_dir = './model_dir_nsr_test_plot/'
-    image_dir = './image_dir_nsr_test_plot/'
+    model_dir = './model_dir_nsr_test_self9/'
+    image_dir = './image_dir_nsr_test_self9/'
     if not os.path.exists(model_dir):
         os.mkdir(model_dir)
     if not os.path.exists(image_dir):
@@ -80,7 +80,7 @@ def main(delta):
 
     optimizerD = optim.Adam(netD.parameters(), lr=lr,weight_decay=weight_decay, betas=(beta1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr=lr,weight_decay=weight_decay,betas=(beta1, 0.999))
-
+    PSDloss = PSDShift(device=device, window_length=window_length,noverlap=overlap,intergration=intergration)
     for epoch in range(epoch_num):
         BCE_loss = 0.0
         PSD_loss = 0.0
@@ -115,12 +115,12 @@ def main(delta):
             errD = errD_real + errD_fake
             optimizerD.step()
 
-            psd_loss = PSDloss(fake, real_cpu)
+            psd_loss,psd_loss_self = PSDloss(fake, real_cpu)
             # ac_loss = ACLoss(fake,real_cpu)
             netG.zero_grad()
             output = netD(fake)
             ad_loss = adversarial_loss(output, label)
-            errG = ad_loss + delta*psd_loss
+            errG = ad_loss + delta1*psd_loss + delta2*psd_loss_self
             errG.backward()
             D_G_z2 = output.mean().item()
             optimizerG.step()
@@ -177,7 +177,7 @@ def plot_figure(real,fake,save_dir):
         plt.close()
 
 if __name__ == '__main__':
-    main(1)
+    main(1,1,400,None,intergration = 'mean')
     # for delta in np.linspace(3.1, 5.0, num=20, endpoint=True):
     #     print(delta)
     #     main(delta)
