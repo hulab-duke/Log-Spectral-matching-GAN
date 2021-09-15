@@ -75,56 +75,66 @@ class PSDShift(nn.Module):
         # self.kernel = Variable(Tensor(torch.rand(1, 1, 3,device = device)), requires_grad=True)
 
     def forward(self,fake,real):
-
+        min_value = 1e-6
         b_size = fake.shape[0]
-        fake = fake.view(b_size,-1)
-        real = real.view(b_size,-1)
+        fake = torch.clamp(fake.view(b_size,-1),min = min_value)
+        real = torch.clamp(real.view(b_size,-1),min = min_value)
 
-        fake_psd_list = torch.clamp(self.psd_list(fake), min=1e-6)
-        real_psd_list = torch.clamp(self.psd_list(real), min=1e-6)
+        fake_psd_list = torch.log(self.psd_list(fake))
+        real_psd_list = torch.log(self.psd_list(real))
+
+        sign = fake_psd_list.sign()
+        fake_psd_list = fake_psd_list.abs_().clamp_(min=min_value)
+        fake_psd_list *= sign
+        sign = real_psd_list.sign()
+        real_psd_list = real_psd_list.abs_().clamp_(min=min_value)
+        real_psd_list *= sign
 
         for index,sig in enumerate(fake_psd_list):
             sig = sig.view(-1,b_size)
             tmp = (sig - torch.min(sig,dim=0)[0])/(torch.max(sig,dim=0)[0] - torch.min(sig,dim=0)[0])
-            tmp = torch.clamp(tmp, min=1e-6)
             fake_psd_list[index] = tmp.view(b_size,-1)
 
         for index,sig in enumerate(real_psd_list):
             sig = sig.view(-1, b_size)
             tmp = (sig - torch.min(sig, dim=0)[0]) / (torch.max(sig, dim=0)[0] - torch.min(sig, dim=0)[0])
-            tmp = torch.clamp(tmp, min=1e-6)
             real_psd_list[index] = tmp.view(b_size, -1)
 
-
         l2_loss = nn.MSELoss()
-        psd_loss = torch.zeros((len(fake_psd_list)**2, 1)).to(self.device)
+        l1_loss = nn.L1Loss()
+        psd_loss = torch.zeros((len(fake_psd_list)**2, 1),requires_grad=True).to(self.device)
         count = 0
         count_self = 0
         m = len(fake_psd_list)
         m = int(m*(m-1)/2)
-        psd_loss_fake = torch.zeros(m, 1).to(self.device)
+        psd_loss_fake = torch.zeros((m, 1),requires_grad=True).to(self.device)
+
         for index_fake in range(1,len(fake_psd_list)+1):
             for index_real in range(1,len(real_psd_list)+1):
                 fake_seg = fake_psd_list[index_fake - 1]
                 real_seg = real_psd_list[index_real - 1]
-                fake_seg = torch.clamp(fake_seg, min=1e-6)
-                real_seg = torch.clamp(real_seg, min=1e-6)# to avoid getting inf loss
+                # fake_seg = torch.clamp(fake_seg, min=min_value)
+                # real_seg = torch.clamp(real_seg, min=min_value)# to avoid getting inf loss
                 psd_loss[count] = l2_loss(fake_seg,real_seg)
+                if torch.isinf(psd_loss[count]) or torch.isnan(psd_loss[count]):
+                    print('bug found')
                 count+=1
 
             for index_fake_self in range(1,len(fake_psd_list)+1):
                 if index_fake < index_fake_self:
                     fake_seg_self = fake_psd_list[index_fake_self-1]
-                    fake_seg_self = torch.clamp(fake_seg_self, min=1e-6)
+                    # fake_seg_self = torch.clamp(fake_seg_self, min=min_value)
                     psd_loss_fake[count_self] = l2_loss(fake_seg,fake_seg_self)
                     count_self+=1
+
+
         if self.intergration == 'max':
             psd_loss = torch.max(psd_loss)
             psd_loss_fake_self = torch.max(psd_loss_fake)
         else:
-            psd_loss = torch.mean(psd_loss,0)
-            psd_loss_fake_self = torch.mean(psd_loss_fake,0)
-        return psd_loss,psd_loss_fake_self
+            psd_loss = torch.mean(psd_loss,0)[0]
+            psd_loss_fake_self = torch.mean(psd_loss_fake,0)[0]
+        return psd_loss
 
 # Compute covariance for a  lag
 def cov(x, y):
