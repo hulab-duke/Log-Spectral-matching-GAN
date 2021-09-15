@@ -134,7 +134,7 @@ class PSDShift(nn.Module):
         else:
             psd_loss = torch.mean(psd_loss,0)[0]
             psd_loss_fake_self = torch.mean(psd_loss_fake,0)[0]
-        return psd_loss
+        return psd_loss,psd_loss_fake_self
 
 # Compute covariance for a  lag
 def cov(x, y):
